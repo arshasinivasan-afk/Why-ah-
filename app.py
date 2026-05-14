@@ -69,12 +69,12 @@ def get_screening_status(shortlist, score):
         return "Rejected"
 
 def write_screening_to_sheet(df_results, job_position="", company=""):
-    """Write all screened candidates to Google Sheet."""
+    """Write all screened candidates to Google Sheet in one batch."""
     ws = get_gsheet()
     if ws is None:
         return 0
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    written = 0
+    rows_to_add = []
     try:
         for _, row in df_results.iterrows():
             shortlist = str(row.get("shortlist", "False")).strip().lower() == "true"
@@ -93,17 +93,18 @@ def write_screening_to_sheet(df_results, job_position="", company=""):
                 str(row.get("missing_requirements", "")),
                 str(row.get("detailed_reasoning", "")),
                 now_str,
-                "", "", "", "", "",  # batch_id, batch_date, sent_by, sent_date, send_status
-                "Pending", "No", "", "TBD",  # reply_status, interview_scheduled, interview_date, final_outcome
-                "",  # notes
-                now_str, "", "0", now_str, "No"  # updated_at, updated_by, times_contacted, last_contacted_date, duplicate_flag
+                "", "", "", "", "",
+                "Pending", "No", "", "TBD",
+                "",
+                now_str, "", "0", now_str, "No"
             ]
-            ws.append_row(row_data, value_input_option="USER_ENTERED")
-            written += 1
-            time.sleep(0.3)  # avoid quota limits
+            rows_to_add.append(row_data)
+        if rows_to_add:
+            ws.append_rows(rows_to_add, value_input_option="USER_ENTERED")
+        return len(rows_to_add)
     except Exception as e:
         st.warning(f"⚠️ Some records may not have been saved to sheet: {e}")
-    return written
+        return 0
 
 # ─────────────────────────────────────────
 #  PAGE CONFIG
@@ -532,19 +533,26 @@ st.markdown("""
 # ─────────────────────────────────────────
 
 @st.cache_resource
-def get_gsheet():
+def get_gsheet_client():
     try:
         creds_dict = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        gc = gspread.authorize(creds)
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+def get_gsheet():
+    try:
+        gc = get_gsheet_client()
+        if gc is None:
+            return None
         sh = gc.open_by_key(SHEET_ID)
-        worksheet = sh.sheet1
-        # Ensure headers exist
-        existing = worksheet.row_values(1)
+        ws = sh.sheet1
+        existing = ws.row_values(1)
         if not existing or existing[0] != "record_id":
-            worksheet.insert_row(TRACKER_COLUMNS, 1)
-        return worksheet
-    except Exception as e:
+            ws.insert_row(TRACKER_COLUMNS, 1)
+        return ws
+    except Exception:
         return None
 
 def load_tracker_data():
