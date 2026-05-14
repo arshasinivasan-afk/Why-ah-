@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import time
+import uuid
 import pytesseract
 from PIL import Image
 import io
@@ -44,11 +45,65 @@ SCOPES = [
 
 TRACKER_COLUMNS = [
     "record_id", "candidate_name", "phone_number", "job_position", "company",
+    "screening_status", "total_score", "confidence_level", "missing_requirements",
+    "detailed_reasoning", "screened_date",
     "batch_id", "batch_date", "sent_by", "sent_date", "send_status",
     "reply_status", "interview_scheduled", "interview_date", "final_outcome",
     "notes", "updated_at", "updated_by", "times_contacted",
     "last_contacted_date", "duplicate_flag"
 ]
+
+def get_screening_status(shortlist, score):
+    """Determine screening status based on shortlist flag and score."""
+    try:
+        score = float(score)
+    except Exception:
+        score = 0
+    if shortlist and score >= 8:
+        return "Accepted"
+    elif shortlist:
+        return "Shortlisted"
+    elif score >= 5:
+        return "Potential"
+    else:
+        return "Rejected"
+
+def write_screening_to_sheet(df_results, job_position="", company=""):
+    """Write all screened candidates to Google Sheet."""
+    ws = get_gsheet()
+    if ws is None:
+        return 0
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    written = 0
+    try:
+        for _, row in df_results.iterrows():
+            shortlist = str(row.get("shortlist", "False")).strip().lower() == "true"
+            score = row.get("total_score", 0)
+            screening_status = get_screening_status(shortlist, score)
+            record_id = f"SCR-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+            row_data = [
+                record_id,
+                str(row.get("candidate_name", "")),
+                str(row.get("phone_number", "")),
+                job_position,
+                company,
+                screening_status,
+                str(score),
+                str(row.get("confidence_level", "")),
+                str(row.get("missing_requirements", "")),
+                str(row.get("detailed_reasoning", "")),
+                now_str,
+                "", "", "", "", "",  # batch_id, batch_date, sent_by, sent_date, send_status
+                "Pending", "No", "", "TBD",  # reply_status, interview_scheduled, interview_date, final_outcome
+                "",  # notes
+                now_str, "", "0", now_str, "No"  # updated_at, updated_by, times_contacted, last_contacted_date, duplicate_flag
+            ]
+            ws.append_row(row_data, value_input_option="USER_ENTERED")
+            written += 1
+            time.sleep(0.3)  # avoid quota limits
+    except Exception as e:
+        st.warning(f"⚠️ Some records may not have been saved to sheet: {e}")
+    return written
 
 # ─────────────────────────────────────────
 #  PAGE CONFIG
@@ -558,6 +613,14 @@ with tab1:
         if uploaded_files:
             st.markdown(f'<p style="font-family: JetBrains Mono, monospace; font-size: 12px; color: #4af0c4; margin-top: 8px;">⬆ {len(uploaded_files)} dossier(s) loaded</p>', unsafe_allow_html=True)
 
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            st.markdown('<div class="section-label" style="margin-top: 16px;">Job Position</div>', unsafe_allow_html=True)
+            screening_job = st.text_input("Job Position", placeholder="e.g. Admin Accountant", label_visibility="collapsed", key="screening_job")
+        with sc2:
+            st.markdown('<div class="section-label" style="margin-top: 16px;">Company</div>', unsafe_allow_html=True)
+            screening_company = st.text_input("Company", placeholder="e.g. Acme Sdn Bhd", label_visibility="collapsed", key="screening_company")
+
         st.markdown('<div class="section-label" style="margin-top: 28px;">02 — Mission Brief</div>', unsafe_allow_html=True)
         job_description = st.text_area(
             "Job description",
@@ -822,6 +885,18 @@ Respond ONLY with valid JSON (no extra text, no markdown, no code fences), with 
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
+            # ── Write all candidates to Google Sheet ──
+            with st.spinner("💾 Saving to Tracker..."):
+                written = write_screening_to_sheet(
+                    df,
+                    job_position=screening_job.strip() if screening_job else "",
+                    company=screening_company.strip() if screening_company else ""
+                )
+            if written > 0:
+                st.markdown(f'<p style="font-family: JetBrains Mono, monospace; font-size: 12px; color: #4af0c4; margin-top: 8px;">📊 {written} candidates saved to Tracker</p>', unsafe_allow_html=True)
+            else:
+                st.markdown('<p style="font-family: JetBrains Mono, monospace; font-size: 12px; color: #ff6b4a; margin-top: 8px;">⚠ Could not save to Tracker — check Google Sheets connection</p>', unsafe_allow_html=True)
+
 # ══════════════════════════════════════════
 #  TAB 2 — TRACKER
 # ══════════════════════════════════════════
@@ -855,8 +930,8 @@ with tab2:
             filter_job = st.selectbox("Job Position", job_options, key="filter_job")
 
         with fc2:
-            status_options = ["All", "Pending", "Replied", "No Reply", "Ghosted"]
-            filter_status = st.selectbox("Reply Status", status_options, key="filter_status")
+            screening_options = ["All", "Accepted", "Shortlisted", "Potential", "Rejected"]
+            filter_screening = st.selectbox("Screening Status", screening_options, key="filter_screening")
 
         with fc3:
             outcome_options = ["All", "TBD", "Hired", "Rejected", "On Hold"]
@@ -866,9 +941,9 @@ with tab2:
         filtered = df_tracker.copy()
         if filter_job != "All":
             filtered = filtered[filtered["job_position"] == filter_job]
-        if filter_status != "All":
-            filtered = filtered[filtered["reply_status"] == filter_status]
-        if filter_outcome != "All":
+        if filter_screening != "All" and "screening_status" in filtered.columns:
+            filtered = filtered[filtered["screening_status"] == filter_screening]
+        if filter_outcome != "All" and "final_outcome" in filtered.columns:
             filtered = filtered[filtered["final_outcome"] == filter_outcome]
 
         # ── Summary metrics ──
