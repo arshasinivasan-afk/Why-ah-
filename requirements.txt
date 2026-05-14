@@ -1,0 +1,9 @@
+streamlit
+pymupdf
+pandas
+groq
+pytesseract
+Pillow
+openpyxl
+gspread
+google-auth
